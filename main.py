@@ -210,5 +210,8 @@ async def logs(interaction: discord.Interaction, channel: discord.TextChannel):
     conn.commit()
     await interaction.response.send_message(f"📋 Logs set to {channel.mention}.")
 
-# Start Bot
-bot.run("MTU1NDE1MTMwODY4NzA1MjkwMA.GBrpGJ.XT-Qjc3ighRFO3y4Tf2PLHcTz1UGOQV3z4LIaM")
+import os
+
+# ... rest of your code ...
+
+bot.run(os.getenv('DISCORD_TOKEN'))
