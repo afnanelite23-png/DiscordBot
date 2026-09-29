@@ -165,7 +165,6 @@ async def on_message(message):
         cursor.execute("DELETE FROM afk_users WHERE user_id = ?", (message.author.id,))
         conn.commit()
 
-        # Restore original nickname if possible
         try:
             await message.author.edit(nick=original_nick)
         except discord.Forbidden:
@@ -210,7 +209,7 @@ async def on_member_join(member: discord.Member):
 
     if channel:
         embed = discord.Embed(
-            title=f"🛡️ Welcome to {member.guild.name}!",
+            title=f"🛡️️ Welcome to {member.guild.name}!",
             description=f"Welcome {member.mention}! Please make sure to follow the server rules.",
             color=discord.Color.blue()
         )
@@ -224,12 +223,12 @@ async def on_member_join(member: discord.Member):
         await channel.send(content=f"Welcome {member.mention}!", embed=embed)
 
 # ==========================================
-# PREFIX COMMANDS (PREFIX: ?)
+# DUAL COMMANDS (WORK AS BOTH ? AND SLASH /)
 # ==========================================
 
 # --- AFK COMMAND ---
-@bot.command(name="afk")
-async def afk(ctx, *, reason: str = "AFK"):
+@bot.hybrid_command(name="afk", description="Set your AFK status")
+async def afk(ctx: commands.Context, *, reason: str = "AFK"):
     ts = int(datetime.datetime.now().timestamp())
     original_nick = ctx.author.nick
 
@@ -248,48 +247,48 @@ async def afk(ctx, *, reason: str = "AFK"):
     await ctx.send(f"💤 {ctx.author.mention}, I set your AFK status to: **{reason}**")
 
 # --- BAN COMMAND ---
-@bot.command(name="ban")
+@bot.hybrid_command(name="ban", description="Ban a member from the server")
 @commands.has_permissions(ban_members=True)
-async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+async def ban(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
     await member.ban(reason=reason)
     await ctx.send(f"⛔ **Banned:** `{member.display_name}` | **Reason:** {reason}")
 
 # --- KICK COMMAND ---
-@bot.command(name="kick")
+@bot.hybrid_command(name="kick", description="Kick a member from the server")
 @commands.has_permissions(kick_members=True)
-async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+async def kick(ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
     await member.kick(reason=reason)
     await ctx.send(f"👢 **Kicked:** `{member.display_name}` | **Reason:** {reason}")
 
 # --- TIMEOUT COMMAND ---
-@bot.command(name="timeout")
+@bot.hybrid_command(name="timeout", description="Timeout a member for a specified duration in minutes")
 @commands.has_permissions(moderate_members=True)
-async def timeout(ctx, member: discord.Member, minutes: int, *, reason: str = "No reason provided"):
+async def timeout(ctx: commands.Context, member: discord.Member, minutes: int, *, reason: str = "No reason provided"):
     duration = datetime.timedelta(minutes=minutes)
     await member.timeout(duration, reason=reason)
     await ctx.send(f"⏳ **Timed out:** `{member.display_name}` for `{minutes}m` | **Reason:** {reason}")
 
 # --- ADD ROLE COMMAND ---
-@bot.command(name="addrole")
+@bot.hybrid_command(name="addrole", description="Add a role to a member")
 @commands.has_permissions(manage_roles=True)
-async def addrole(ctx, member: discord.Member, role: discord.Role):
+async def addrole(ctx: commands.Context, member: discord.Member, role: discord.Role):
     if role in member.roles:
         return await ctx.send(f"❌ `{member.display_name}` already has **{role.name}**.")
     await member.add_roles(role)
     await ctx.send(f"✅ Added **{role.name}** to `{member.display_name}`.")
 
 # --- SET AUTOROLE COMMAND ---
-@bot.command(name="autorole")
+@bot.hybrid_command(name="autorole", description="Set automatic role for new members")
 @commands.has_permissions(administrator=True)
-async def autorole(ctx, role: discord.Role):
+async def autorole(ctx: commands.Context, role: discord.Role):
     cursor.execute("INSERT INTO server_config (guild_id, autorole_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET autorole_id=?", (ctx.guild.id, role.id, role.id))
     conn.commit()
     await ctx.send(f"✅ **Autorole** set to **{role.name}**. New members will receive this role automatically.")
 
 # --- MASS ROLE ALL COMMAND ---
-@bot.command(name="roleall")
+@bot.hybrid_command(name="roleall", description="Give a role to all human members")
 @commands.has_permissions(administrator=True)
-async def roleall(ctx, role: discord.Role):
+async def roleall(ctx: commands.Context, role: discord.Role):
     await ctx.send(f"⏳ Giving **{role.name}** to all members. Please wait...")
     count = 0
     for member in ctx.guild.members:
@@ -302,75 +301,78 @@ async def roleall(ctx, role: discord.Role):
                 continue
     await ctx.send(f"✅ Given **{role.name}** to `{count}` members!")
 
-# ==========================================
-# SLASH COMMANDS (SECURITY & MANAGEMENT)
-# ==========================================
-
-@bot.tree.command(name="beastmode", description="Toggle security on/off")
+# --- BEASTMODE COMMAND ---
+@bot.hybrid_command(name="beastmode", description="Toggle anti-nuke security on or off")
 @app_commands.choices(mode=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
-async def beastmode(interaction: discord.Interaction, mode: app_commands.Choice[str]):
-    if not is_owner_or_admin(interaction.guild, interaction.user.id):
-        return await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
-    state = 1 if mode.value == "on" else 0
-    cursor.execute("INSERT INTO server_config (guild_id, beastmode) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET beastmode=?", (interaction.guild.id, state, state))
+async def beastmode(ctx: commands.Context, mode: str):
+    if not is_owner_or_admin(ctx.guild, ctx.author.id):
+        return await ctx.send("❌ Unauthorized.", ephemeral=True)
+    state = 1 if mode.lower() == "on" else 0
+    cursor.execute("INSERT INTO server_config (guild_id, beastmode) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET beastmode=?", (ctx.guild.id, state, state))
     conn.commit()
-    await interaction.response.send_message(f"🔒 Beastmode set to **{mode.value.upper()}**.")
+    await ctx.send(f"🔒 Beastmode set to **{mode.upper()}**.")
 
-@bot.tree.command(name="whitelist", description="Manage whitelisted users")
+# --- WHITELIST COMMAND ---
+@bot.hybrid_command(name="whitelist", description="Manage whitelisted security users")
 @app_commands.choices(action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove"), app_commands.Choice(name="list", value="list")])
-async def whitelist(interaction: discord.Interaction, action: app_commands.Choice[str], user: discord.User = None):
-    if not is_owner_or_admin(interaction.guild, interaction.user.id):
-        return await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
-    if action.value == "list":
-        cursor.execute("SELECT user_id FROM users WHERE guild_id=? AND role_type='whitelist'", (interaction.guild.id,))
+async def whitelist(ctx: commands.Context, action: str, user: discord.User = None):
+    if not is_owner_or_admin(ctx.guild, ctx.author.id):
+        return await ctx.send("❌ Unauthorized.", ephemeral=True)
+    if action == "list":
+        cursor.execute("SELECT user_id FROM users WHERE guild_id=? AND role_type='whitelist'", (ctx.guild.id,))
         users = [f"<@{r[0]}>" for r in cursor.fetchall()]
-        return await interaction.response.send_message(embed=discord.Embed(title="Whitelist", description="\n".join(users) or "Empty"))
-    if not user: return await interaction.response.send_message("Specify user.", ephemeral=True)
-    if action.value == "add":
-        cursor.execute("INSERT OR IGNORE INTO users VALUES (?, ?, 'whitelist')", (interaction.guild.id, user.id))
-    elif action.value == "remove":
-        cursor.execute("DELETE FROM users WHERE guild_id=? AND user_id=? AND role_type='whitelist'", (interaction.guild.id, user.id))
+        return await ctx.send(embed=discord.Embed(title="Whitelist", description="\n".join(users) or "Empty"))
+    if not user: 
+        return await ctx.send("Please specify a user.", ephemeral=True)
+    if action == "add":
+        cursor.execute("INSERT OR IGNORE INTO users VALUES (?, ?, 'whitelist')", (ctx.guild.id, user.id))
+    elif action == "remove":
+        cursor.execute("DELETE FROM users WHERE guild_id=? AND user_id=? AND role_type='whitelist'", (ctx.guild.id, user.id))
     conn.commit()
-    await interaction.response.send_message(f"Updated whitelist for {user.mention}.")
+    await ctx.send(f"Updated whitelist for {user.mention}.")
 
-@bot.tree.command(name="admin", description="Manage bot admins (Owner Only)")
+# --- ADMIN COMMAND ---
+@bot.hybrid_command(name="admin", description="Manage bot admins (Owner Only)")
 @app_commands.choices(action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove"), app_commands.Choice(name="list", value="list")])
-async def admin(interaction: discord.Interaction, action: app_commands.Choice[str], user: discord.User = None):
-    if interaction.user.id not in BOT_OWNERS and interaction.user.id != interaction.guild.owner_id:
-        return await interaction.response.send_message("❌ Owners only.", ephemeral=True)
-    if action.value == "list":
-        cursor.execute("SELECT user_id FROM users WHERE guild_id=? AND role_type='admin'", (interaction.guild.id,))
+async def admin(ctx: commands.Context, action: str, user: discord.User = None):
+    if ctx.author.id not in BOT_OWNERS and ctx.author.id != ctx.guild.owner_id:
+        return await ctx.send("❌ Owners only.", ephemeral=True)
+    if action == "list":
+        cursor.execute("SELECT user_id FROM users WHERE guild_id=? AND role_type='admin'", (ctx.guild.id,))
         admins = [f"<@{r[0]}>" for r in cursor.fetchall()]
-        return await interaction.response.send_message(embed=discord.Embed(title="Admins", description="\n".join(admins) or "None"))
-    if not user: return await interaction.response.send_message("Specify user.", ephemeral=True)
-    if action.value == "add":
-        cursor.execute("INSERT OR IGNORE INTO users VALUES (?, ?, 'admin')", (interaction.guild.id, user.id))
-    elif action.value == "remove":
-        cursor.execute("DELETE FROM users WHERE guild_id=? AND user_id=? AND role_type='admin'", (interaction.guild.id, user.id))
+        return await ctx.send(embed=discord.Embed(title="Admins", description="\n".join(admins) or "None"))
+    if not user: 
+        return await ctx.send("Please specify a user.", ephemeral=True)
+    if action == "add":
+        cursor.execute("INSERT OR IGNORE INTO users VALUES (?, ?, 'admin')", (ctx.guild.id, user.id))
+    elif action == "remove":
+        cursor.execute("DELETE FROM users WHERE guild_id=? AND user_id=? AND role_type='admin'", (ctx.guild.id, user.id))
     conn.commit()
-    await interaction.response.send_message(f"Updated admins for {user.mention}.")
+    await ctx.send(f"Updated admins for {user.mention}.")
 
-@bot.tree.command(name="restore", description="Restore a user's lost roles")
-async def restore(interaction: discord.Interaction, user: discord.Member):
-    if not is_owner_or_admin(interaction.guild, interaction.user.id):
-        return await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
-    cursor.execute("SELECT role_id FROM role_backups WHERE guild_id=? AND user_id=?", (interaction.guild.id, user.id))
-    roles = [interaction.guild.get_role(r[0]) for r in cursor.fetchall() if interaction.guild.get_role(r[0])]
+# --- RESTORE COMMAND ---
+@bot.hybrid_command(name="restore", description="Restore a user's lost roles stripped by Beastmode")
+async def restore(ctx: commands.Context, user: discord.Member):
+    if not is_owner_or_admin(ctx.guild, ctx.author.id):
+        return await ctx.send("❌ Unauthorized.", ephemeral=True)
+    cursor.execute("SELECT role_id FROM role_backups WHERE guild_id=? AND user_id=?", (ctx.guild.id, user.id))
+    roles = [ctx.guild.get_role(r[0]) for r in cursor.fetchall() if ctx.guild.get_role(r[0])]
     if roles:
         await user.add_roles(*roles)
-        cursor.execute("DELETE FROM role_backups WHERE guild_id=? AND user_id=?", (interaction.guild.id, user.id))
+        cursor.execute("DELETE FROM role_backups WHERE guild_id=? AND user_id=?", (ctx.guild.id, user.id))
         conn.commit()
-        await interaction.response.send_message(f"✅ Restored roles to {user.mention}.")
+        await ctx.send(f"✅ Restored roles to {user.mention}.")
     else:
-        await interaction.response.send_message("❌ No backup found.", ephemeral=True)
+        await ctx.send("❌ No backup found.", ephemeral=True)
 
-@bot.tree.command(name="logs", description="Set log channel")
-async def logs(interaction: discord.Interaction, channel: discord.TextChannel):
-    if not is_owner_or_admin(interaction.guild, interaction.user.id):
-        return await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
-    cursor.execute("INSERT INTO server_config (guild_id, log_channel_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET log_channel_id=?", (interaction.guild.id, channel.id, channel.id))
+# --- LOGS COMMAND ---
+@bot.hybrid_command(name="logs", description="Set log channel for security alerts")
+async def logs(ctx: commands.Context, channel: discord.TextChannel):
+    if not is_owner_or_admin(ctx.guild, ctx.author.id):
+        return await ctx.send("❌ Unauthorized.", ephemeral=True)
+    cursor.execute("INSERT INTO server_config (guild_id, log_channel_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET log_channel_id=?", (ctx.guild.id, channel.id, channel.id))
     conn.commit()
-    await interaction.response.send_message(f"📋 Logs set to {channel.mention}.")
+    await ctx.send(f"📋 Logs set to {channel.mention}.")
 
 # --- START BOT ---
 bot.run(os.getenv('DISCORD_TOKEN'))
