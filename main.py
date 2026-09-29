@@ -53,13 +53,12 @@ CREATE TABLE IF NOT EXISTS role_backups (
 """)
 conn.commit()
 
-# --- BOT SETUP ---
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.moderation = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# --- BOT SETUP ---
+intents = discord.Intents.all()
+
+# Allows the bot to listen to > prefix commands while syncing / slash commands
+bot = commands.Bot(command_prefix=">", intents=intents, help_command=None)
 
 # Helper functions
 def is_owner_or_admin(guild: discord.Guild, user_id: int) -> bool:
