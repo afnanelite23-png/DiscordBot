@@ -209,6 +209,29 @@ async def logs(interaction: discord.Interaction, channel: discord.TextChannel):
     cursor.execute("INSERT INTO server_config (guild_id, log_channel_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET log_channel_id=?", (interaction.guild.id, channel.id, channel.id))
     conn.commit()
     await interaction.response.send_message(f"📋 Logs set to {channel.mention}.")
+    # --- WELCOME SYSTEM EVENT ---
+@bot.event
+async def on_member_join(member: discord.Member):
+    # Automatically finds a text channel named 'welcome' or 'welcomes'
+    channel = discord.utils.get(member.guild.text_channels, name="🦇『👋』welcomes")
+    if not channel:
+        channel = discord.utils.get(member.guild.text_channels, name="welcomes")
+
+    if channel:
+        embed = discord.Embed(
+            title=f"🛡️ Welcome to {member.guild.name}!",
+            description=f"Welcome {member.mention}! Please make sure to follow the server rules.",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="Member Count", value=f"#{member.guild.member_count}", inline=True)
+        embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d"), inline=True)
+        embed.set_footer(
+            text="FXY Security • Custom Bot Services by @plzdie",
+            icon_url=bot.user.display_avatar.url
+        )
+
+        await channel.send(content=f"Welcome {member.mention}!", embed=embed)
 
 import os
 
