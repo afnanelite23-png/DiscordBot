@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS role_backups (
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS afk_users (
     user_id INTEGER PRIMARY KEY,
+    original_nick TEXT,
     reason TEXT,
     timestamp INTEGER
 )
@@ -66,7 +67,7 @@ conn.commit()
 
 # --- BOT SETUP ---
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="-", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="?", intents=intents, help_command=None)
 
 # --- HELPER FUNCTIONS ---
 def is_owner_or_admin(guild: discord.Guild, user_id: int) -> bool:
@@ -150,35 +151,47 @@ async def on_member_update(before, after):
         async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.member_role_update):
             await punish_user(after.guild, entry.user, f"Gave role to {after.mention}")
 
-# Combined Message Listener (AFK Handler & Prefix Commands)
+# --- MESSAGE EVENT (AFK CHECKER & NICKNAME RESTORE) ---
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author.bot or not message.guild:
         return
 
-    # Remove AFK status if user speaks
-    cursor.execute("SELECT reason FROM afk_users WHERE user_id = ?", (message.author.id,))
+    # 1. Remove AFK status when the user speaks
+    cursor.execute("SELECT original_nick FROM afk_users WHERE user_id = ?", (message.author.id,))
     afk_data = cursor.fetchone()
     if afk_data:
+        original_nick = afk_data[0]
         cursor.execute("DELETE FROM afk_users WHERE user_id = ?", (message.author.id,))
         conn.commit()
+
+        # Restore original nickname if possible
+        try:
+            await message.author.edit(nick=original_nick)
+        except discord.Forbidden:
+            pass
+
         await message.channel.send(f"👋 Welcome back {message.author.mention}, I removed your AFK status.", delete_after=5)
 
-    # Check if mentioned user is AFK
+    # 2. Alert when pinging an AFK member
     if message.mentions:
         for mentioned in message.mentions:
+            if mentioned.id == message.author.id:
+                continue
             cursor.execute("SELECT reason, timestamp FROM afk_users WHERE user_id = ?", (mentioned.id,))
             row = cursor.fetchone()
             if row:
                 reason, ts = row
-                await message.channel.send(f"💤 `{mentioned.display_name}` is AFK: **{reason}** ()", delete_after=7)
+                await message.channel.send(
+                    f"💤 `{mentioned.display_name}` is currently AFK: **{reason}** ()", 
+                    delete_after=7
+                )
 
     await bot.process_commands(message)
 
 # --- WELCOME & AUTOROLE SYSTEM ---
 @bot.event
 async def on_member_join(member: discord.Member):
-    # Auto-role check
     cursor.execute("SELECT autorole_id FROM server_config WHERE guild_id = ?", (member.guild.id,))
     row = cursor.fetchone()
     if row and row[0]:
@@ -189,7 +202,6 @@ async def on_member_join(member: discord.Member):
             except discord.Forbidden:
                 pass
 
-    # Welcome message check
     channel = discord.utils.get(member.guild.text_channels, name="🦇『👋』welcomes")
     if not channel:
         channel = discord.utils.get(member.guild.text_channels, name="welcomes")
@@ -212,15 +224,27 @@ async def on_member_join(member: discord.Member):
         await channel.send(content=f"Welcome {member.mention}!", embed=embed)
 
 # ==========================================
-# PREFIX COMMANDS (PREFIX: >)
+# PREFIX COMMANDS (PREFIX: ?)
 # ==========================================
 
 # --- AFK COMMAND ---
 @bot.command(name="afk")
 async def afk(ctx, *, reason: str = "AFK"):
     ts = int(datetime.datetime.now().timestamp())
-    cursor.execute("INSERT OR REPLACE INTO afk_users VALUES (?, ?, ?)", (ctx.author.id, reason, ts))
+    original_nick = ctx.author.nick
+
+    cursor.execute("INSERT OR REPLACE INTO afk_users VALUES (?, ?, ?, ?)", (ctx.author.id, original_nick, reason, ts))
     conn.commit()
+
+    new_nick = f"[AFK] {ctx.author.display_name}"
+    if len(new_nick) > 32:
+        new_nick = new_nick[:32]
+
+    try:
+        await ctx.author.edit(nick=new_nick)
+    except discord.Forbidden:
+        pass
+
     await ctx.send(f"💤 {ctx.author.mention}, I set your AFK status to: **{reason}**")
 
 # --- BAN COMMAND ---
