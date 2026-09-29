@@ -1,11 +1,19 @@
+import os
+import asyncio
+import sqlite3
+import datetime
+import discord
+from discord import app_commands
+from discord.ext import commands
 from flask import Flask
 from threading import Thread
 
+# --- KEEP-ALIVE FLASK SERVER ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot is alive!"
+    return "FXY Security Bot is Online!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -15,13 +23,8 @@ def keep_alive():
     t.start()
 
 keep_alive()
-import os
-import sqlite3
-import discord
-from discord import app_commands
-from discord.ext import commands
 
-# Permanent Bot Owners (Your specified User IDs)
+# --- PERMANENT BOT OWNERS ---
 BOT_OWNERS = {1428428552310620326, 1115291777923027005}
 
 # --- DATABASE SETUP ---
@@ -32,7 +35,8 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS server_config (
     guild_id INTEGER PRIMARY KEY,
     beastmode INTEGER DEFAULT 0,
-    log_channel_id INTEGER DEFAULT NULL
+    log_channel_id INTEGER DEFAULT NULL,
+    autorole_id INTEGER DEFAULT NULL
 )
 """)
 cursor.execute("""
@@ -51,16 +55,20 @@ CREATE TABLE IF NOT EXISTS role_backups (
     PRIMARY KEY (guild_id, user_id, role_id)
 )
 """)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS afk_users (
+    user_id INTEGER PRIMARY KEY,
+    reason TEXT,
+    timestamp INTEGER
+)
+""")
 conn.commit()
-
 
 # --- BOT SETUP ---
 intents = discord.Intents.all()
-
-# Allows the bot to listen to > prefix commands while syncing / slash commands
 bot = commands.Bot(command_prefix=">", intents=intents, help_command=None)
 
-# Helper functions
+# --- HELPER FUNCTIONS ---
 def is_owner_or_admin(guild: discord.Guild, user_id: int) -> bool:
     if user_id in BOT_OWNERS or user_id == guild.owner_id:
         return True
@@ -109,7 +117,7 @@ async def punish_user(guild: discord.Guild, member: discord.Member, reason: str)
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print(f"Logged in as {bot.user}")
+    print(f"Logged in as {bot.user} - FXY Security Bot Active")
 
 @bot.event
 async def on_guild_channel_create(channel):
@@ -142,7 +150,138 @@ async def on_member_update(before, after):
         async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.member_role_update):
             await punish_user(after.guild, entry.user, f"Gave role to {after.mention}")
 
-# --- SLASH COMMANDS ---
+# Combined Message Listener (AFK Handler & Prefix Commands)
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    # Remove AFK status if user speaks
+    cursor.execute("SELECT reason FROM afk_users WHERE user_id = ?", (message.author.id,))
+    afk_data = cursor.fetchone()
+    if afk_data:
+        cursor.execute("DELETE FROM afk_users WHERE user_id = ?", (message.author.id,))
+        conn.commit()
+        await message.channel.send(f"👋 Welcome back {message.author.mention}, I removed your AFK status.", delete_after=5)
+
+    # Check if mentioned user is AFK
+    if message.mentions:
+        for mentioned in message.mentions:
+            cursor.execute("SELECT reason, timestamp FROM afk_users WHERE user_id = ?", (mentioned.id,))
+            row = cursor.fetchone()
+            if row:
+                reason, ts = row
+                await message.channel.send(f"💤 `{mentioned.display_name}` is AFK: **{reason}** ()", delete_after=7)
+
+    await bot.process_commands(message)
+
+# --- WELCOME & AUTOROLE SYSTEM ---
+@bot.event
+async def on_member_join(member: discord.Member):
+    # Auto-role check
+    cursor.execute("SELECT autorole_id FROM server_config WHERE guild_id = ?", (member.guild.id,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        auto_role = member.guild.get_role(row[0])
+        if auto_role:
+            try:
+                await member.add_roles(auto_role)
+            except discord.Forbidden:
+                pass
+
+    # Welcome message check
+    channel = discord.utils.get(member.guild.text_channels, name="🦇『👋』welcomes")
+    if not channel:
+        channel = discord.utils.get(member.guild.text_channels, name="welcomes")
+    if not channel:
+        channel = discord.utils.get(member.guild.text_channels, name="welcome")
+
+    if channel:
+        embed = discord.Embed(
+            title=f"🛡️ Welcome to {member.guild.name}!",
+            description=f"Welcome {member.mention}! Please make sure to follow the server rules.",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="Member Count", value=f"#{member.guild.member_count}", inline=True)
+        embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d"), inline=True)
+        embed.set_footer(
+            text="FXY Security • Custom Bot Services by @plzdie",
+            icon_url=bot.user.display_avatar.url
+        )
+        await channel.send(content=f"Welcome {member.mention}!", embed=embed)
+
+# ==========================================
+# PREFIX COMMANDS (PREFIX: >)
+# ==========================================
+
+# --- AFK COMMAND ---
+@bot.command(name="afk")
+async def afk(ctx, *, reason: str = "AFK"):
+    ts = int(datetime.datetime.now().timestamp())
+    cursor.execute("INSERT OR REPLACE INTO afk_users VALUES (?, ?, ?)", (ctx.author.id, reason, ts))
+    conn.commit()
+    await ctx.send(f"💤 {ctx.author.mention}, I set your AFK status to: **{reason}**")
+
+# --- BAN COMMAND ---
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+async def ban(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+    await member.ban(reason=reason)
+    await ctx.send(f"⛔ **Banned:** `{member.display_name}` | **Reason:** {reason}")
+
+# --- KICK COMMAND ---
+@bot.command(name="kick")
+@commands.has_permissions(kick_members=True)
+async def kick(ctx, member: discord.Member, *, reason: str = "No reason provided"):
+    await member.kick(reason=reason)
+    await ctx.send(f"👢 **Kicked:** `{member.display_name}` | **Reason:** {reason}")
+
+# --- TIMEOUT COMMAND ---
+@bot.command(name="timeout")
+@commands.has_permissions(moderate_members=True)
+async def timeout(ctx, member: discord.Member, minutes: int, *, reason: str = "No reason provided"):
+    duration = datetime.timedelta(minutes=minutes)
+    await member.timeout(duration, reason=reason)
+    await ctx.send(f"⏳ **Timed out:** `{member.display_name}` for `{minutes}m` | **Reason:** {reason}")
+
+# --- ADD ROLE COMMAND ---
+@bot.command(name="addrole")
+@commands.has_permissions(manage_roles=True)
+async def addrole(ctx, member: discord.Member, role: discord.Role):
+    if role in member.roles:
+        return await ctx.send(f"❌ `{member.display_name}` already has **{role.name}**.")
+    await member.add_roles(role)
+    await ctx.send(f"✅ Added **{role.name}** to `{member.display_name}`.")
+
+# --- SET AUTOROLE COMMAND ---
+@bot.command(name="autorole")
+@commands.has_permissions(administrator=True)
+async def autorole(ctx, role: discord.Role):
+    cursor.execute("INSERT INTO server_config (guild_id, autorole_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET autorole_id=?", (ctx.guild.id, role.id, role.id))
+    conn.commit()
+    await ctx.send(f"✅ **Autorole** set to **{role.name}**. New members will receive this role automatically.")
+
+# --- MASS ROLE ALL COMMAND ---
+@bot.command(name="roleall")
+@commands.has_permissions(administrator=True)
+async def roleall(ctx, role: discord.Role):
+    await ctx.send(f"⏳ Giving **{role.name}** to all members. Please wait...")
+    count = 0
+    for member in ctx.guild.members:
+        if not member.bot and role not in member.roles:
+            try:
+                await member.add_roles(role)
+                count += 1
+                await asyncio.sleep(0.4)
+            except Exception:
+                continue
+    await ctx.send(f"✅ Given **{role.name}** to `{count}` members!")
+
+# ==========================================
+# SLASH COMMANDS (SECURITY & MANAGEMENT)
+# ==========================================
+
 @bot.tree.command(name="beastmode", description="Toggle security on/off")
 @app_commands.choices(mode=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
 async def beastmode(interaction: discord.Interaction, mode: app_commands.Choice[str]):
@@ -208,32 +347,6 @@ async def logs(interaction: discord.Interaction, channel: discord.TextChannel):
     cursor.execute("INSERT INTO server_config (guild_id, log_channel_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET log_channel_id=?", (interaction.guild.id, channel.id, channel.id))
     conn.commit()
     await interaction.response.send_message(f"📋 Logs set to {channel.mention}.")
-    # --- WELCOME SYSTEM EVENT ---
-@bot.event
-async def on_member_join(member: discord.Member):
-    # Automatically finds a text channel named 'welcome' or 'welcomes'
-    channel = discord.utils.get(member.guild.text_channels, name="🦇『👋』welcomes")
-    if not channel:
-        channel = discord.utils.get(member.guild.text_channels, name="welcomes")
 
-    if channel:
-        embed = discord.Embed(
-            title=f"🛡️ Welcome to {member.guild.name}!",
-            description=f"Welcome {member.mention}! Please make sure to follow the server rules.",
-            color=discord.Color.blue()
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Member Count", value=f"#{member.guild.member_count}", inline=True)
-        embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d"), inline=True)
-        embed.set_footer(
-            text="FXY Security • Custom Bot Services by @plzdie",
-            icon_url=bot.user.display_avatar.url
-        )
-
-        await channel.send(content=f"Welcome {member.mention}!", embed=embed)
-
-import os
-
-# ... rest of your code ...
-
+# --- START BOT ---
 bot.run(os.getenv('DISCORD_TOKEN'))
