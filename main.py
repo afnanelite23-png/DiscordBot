@@ -14,7 +14,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "FXY Security & Economy Bot is Online!"
+    return "FXY Security, Ticket & Economy Bot is Online!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS server_config (
     beastmode INTEGER DEFAULT 0,
     log_channel_id INTEGER DEFAULT NULL,
     autorole_id INTEGER DEFAULT NULL,
-    ticket_category_id INTEGER DEFAULT NULL
+    ticket_category_id INTEGER DEFAULT NULL,
+    staff_role_id INTEGER DEFAULT NULL
 )
 """)
 cursor.execute("""
@@ -82,8 +83,11 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="?", intents=intents, help_command=None)
 
 # --- HELPER FUNCTIONS ---
+def is_bot_owner(user_id: int) -> bool:
+    return user_id in BOT_OWNERS
+
 def is_owner_or_admin(guild: discord.Guild, user_id: int) -> bool:
-    if user_id in BOT_OWNERS or user_id == guild.owner_id:
+    if is_bot_owner(user_id) or user_id == guild.owner_id:
         return True
     cursor.execute("SELECT 1 FROM users WHERE guild_id = ? AND user_id = ? AND role_type = 'admin'", (guild.id, user_id))
     return cursor.fetchone() is not None
@@ -118,7 +122,7 @@ async def log_alert(guild: discord.Guild, title: str, description: str, alert: b
         await channel.send(content=content, embed=embed)
 
 async def punish_user(guild: discord.Guild, member: discord.Member, reason: str):
-    if member.id in BOT_OWNERS or member.id == guild.owner_id or is_whitelisted(guild.id, member.id) or member.bot:
+    if is_bot_owner(member.id) or member.id == guild.owner_id or is_whitelisted(guild.id, member.id) or member.bot:
         return
 
     roles_to_strip = [r for r in member.roles if not r.is_default() and r.is_assignable()]
@@ -136,6 +140,43 @@ async def punish_user(guild: discord.Guild, member: discord.Member, reason: str)
         await log_alert(guild, "❌ Action Failed", f"Bot lacked permissions to strip roles from {member.mention}.", alert=True)
 
 # --- TICKET UI VIEWS ---
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✋ Claim Ticket", style=discord.ButtonStyle.success, custom_id="claim_ticket_btn")
+    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        user = interaction.user
+
+        cursor.execute("SELECT staff_role_id FROM server_config WHERE guild_id = ?", (guild.id,))
+        row = cursor.fetchone()
+        staff_role_id = row[0] if row else None
+        staff_role = guild.get_role(staff_role_id) if staff_role_id else None
+
+        if staff_role and staff_role not in user.roles and not is_owner_or_admin(guild, user.id):
+            return await interaction.response.send_message("❌ Only staff members can claim tickets.", ephemeral=True)
+
+        channel = interaction.channel
+        overwrites = channel.overwrites
+
+        if staff_role:
+            overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=False)
+        
+        overwrites[user] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+        await channel.edit(overwrites=overwrites)
+
+        button.disabled = True
+        button.label = f"Claimed by {user.display_name}"
+        await interaction.response.edit_message(view=self)
+        await channel.send(f"✋ Ticket has been claimed by {user.mention}. Only they will assist you now.")
+
+    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 Closing this ticket in 5 seconds...")
+        await asyncio.sleep(5)
+        await interaction.channel.delete(reason="Ticket Closed")
+
 class TicketLauncher(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -145,21 +186,27 @@ class TicketLauncher(discord.ui.View):
         guild = interaction.guild
         user = interaction.user
 
-        # Check if ticket channel already exists for user
         existing_channel = discord.utils.get(guild.text_channels, name=f"ticket-{user.name.lower()}")
         if existing_channel:
             return await interaction.response.send_message(f"❌ You already have an open ticket: {existing_channel.mention}", ephemeral=True)
 
-        # Get or create ticket category
-        cursor.execute("SELECT ticket_category_id FROM server_config WHERE guild_id = ?", (guild.id,))
+        cursor.execute("SELECT ticket_category_id, staff_role_id FROM server_config WHERE guild_id = ?", (guild.id,))
         row = cursor.fetchone()
-        category = guild.get_channel(row[0]) if row and row[0] else None
+        
+        category_id = row[0] if row else None
+        staff_role_id = row[1] if row else None
+
+        category = guild.get_channel(category_id) if category_id else None
+        staff_role = guild.get_role(staff_role_id) if staff_role_id else None
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             user: discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
         }
+
+        if staff_role:
+            overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
 
         channel = await guild.create_text_channel(
             name=f"ticket-{user.name}",
@@ -170,29 +217,24 @@ class TicketLauncher(discord.ui.View):
 
         embed = discord.Embed(
             title="🎫 Support Ticket Created",
-            description=f"Welcome {user.mention}! Please describe your issue in detail. A staff member will be with you shortly.",
+            description=f"Welcome {user.mention}! Please state your query or request. A staff member will claim your ticket shortly.",
             color=discord.Color.green()
         )
-        await channel.send(content=f"{user.mention}", embed=embed, view=CloseTicketView())
+        
+        ping_content = f"{user.mention}"
+        if staff_role:
+            ping_content += f" | {staff_role.mention}"
+
+        await channel.send(content=ping_content, embed=embed, view=TicketControlView())
         await interaction.response.send_message(f"✅ Ticket created: {channel.mention}", ephemeral=True)
-
-class CloseTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("🔒 Closing this ticket in 5 seconds...")
-        await asyncio.sleep(5)
-        await interaction.channel.delete(reason="Ticket Closed")
 
 # --- EVENTS ---
 @bot.event
 async def on_ready():
     bot.add_view(TicketLauncher())
-    bot.add_view(CloseTicketView())
+    bot.add_view(TicketControlView())
     await bot.tree.sync()
-    print(f"Logged in as {bot.user} - Security, Ticket & Economy Active")
+    print(f"Logged in as {bot.user} - FXY Security & Multi-System Active")
 
 @bot.event
 async def on_guild_channel_create(channel):
@@ -225,13 +267,12 @@ async def on_member_update(before, after):
         async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.member_role_update):
             await punish_user(after.guild, entry.user, f"Gave role to {after.mention}")
 
-# --- MESSAGE EVENT (AFK & PREFIX HANDLING) ---
+# --- MESSAGE EVENT ---
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
         return
 
-    # Clear AFK status
     cursor.execute("SELECT original_nick FROM afk_users WHERE user_id = ?", (message.author.id,))
     afk_data = cursor.fetchone()
     if afk_data:
@@ -246,7 +287,6 @@ async def on_message(message):
 
         await message.channel.send(f"👋 Welcome back {message.author.mention}, I removed your AFK status.", delete_after=5)
 
-    # Ping AFK user check
     if message.mentions:
         for mentioned in message.mentions:
             if mentioned.id == message.author.id: continue
@@ -284,11 +324,25 @@ async def on_member_join(member: discord.Member):
         await channel.send(content=f"Welcome {member.mention}!", embed=embed)
 
 # ==========================================
-# COMMANDS (WORK AS BOTH ? AND SLASH /)
+# COMMANDS (PREFIX '?' & SLASH '/')
 # ==========================================
 
 # --- TICKET COMMANDS ---
-@bot.hybrid_command(name="ticket-setup", description="Setup ticket panel channel")
+@bot.hybrid_command(name="setcategory", description="Set default category for created ticket channels")
+@commands.has_permissions(administrator=True)
+async def setcategory(ctx: commands.Context, category: discord.CategoryChannel):
+    cursor.execute("INSERT INTO server_config (guild_id, ticket_category_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET ticket_category_id=?", (ctx.guild.id, category.id, category.id))
+    conn.commit()
+    await ctx.send(f"✅ Ticket category set to **{category.name}**.")
+
+@bot.hybrid_command(name="setstaffrole", description="Set ticket staff role to ping and grant access")
+@commands.has_permissions(administrator=True)
+async def setstaffrole(ctx: commands.Context, role: discord.Role):
+    cursor.execute("INSERT INTO server_config (guild_id, staff_role_id) VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET staff_role_id=?", (ctx.guild.id, role.id, role.id))
+    conn.commit()
+    await ctx.send(f"✅ Ticket staff role set to **{role.name}**.")
+
+@bot.hybrid_command(name="ticket-setup", description="Setup interactive ticket panel")
 @commands.has_permissions(administrator=True)
 async def ticket_setup(ctx: commands.Context, channel: discord.TextChannel = None, category: discord.CategoryChannel = None):
     channel = channel or ctx.channel
@@ -298,22 +352,138 @@ async def ticket_setup(ctx: commands.Context, channel: discord.TextChannel = Non
 
     embed = discord.Embed(
         title="📩 Support Tickets",
-        description="Need assistance or have questions? Click the button below to open a private support ticket.",
+        description="Need assistance or have questions? Click the button below to open a ticket.",
         color=discord.Color.blue()
     )
     await channel.send(embed=embed, view=TicketLauncher())
-    await ctx.send(f"✅ Ticket setup sent to {channel.mention}.", ephemeral=True)
+    await ctx.send(f"✅ Ticket panel deployed in {channel.mention}.", ephemeral=True)
 
-@bot.hybrid_command(name="close", description="Close current support ticket")
+@bot.hybrid_command(name="claim", description="Claim ticket as staff")
+async def claim(ctx: commands.Context):
+    if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("escalated-"):
+        return await ctx.send("❌ This command can only be used inside a ticket channel.", ephemeral=True)
+
+    cursor.execute("SELECT staff_role_id FROM server_config WHERE guild_id = ?", (ctx.guild.id,))
+    row = cursor.fetchone()
+    staff_role = ctx.guild.get_role(row[0]) if row and row[0] else None
+
+    if staff_role and staff_role not in ctx.author.roles and not is_owner_or_admin(ctx.guild, ctx.author.id):
+        return await ctx.send("❌ Only staff members can claim tickets.", ephemeral=True)
+
+    overwrites = ctx.channel.overwrites
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=False)
+
+    overwrites[ctx.author] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+    await ctx.channel.edit(overwrites=overwrites)
+    await ctx.send(f"✋ Ticket claimed by {ctx.author.mention}!")
+
+@bot.hybrid_command(name="rename", description="Rename ticket channel")
+async def rename(ctx: commands.Context, *, new_name: str):
+    if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("escalated-"):
+        return await ctx.send("❌ This command can only be used inside a ticket channel.", ephemeral=True)
+    
+    clean_name = new_name.lower().replace(" ", "-")
+    await ctx.channel.edit(name=clean_name)
+    await ctx.send(f"✏️ Channel renamed to `{clean_name}`.")
+
+@bot.hybrid_command(name="escalate", description="Escalate ticket so only administrators can view it")
+async def escalate(ctx: commands.Context):
+    if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("escalated-"):
+        return await ctx.send("❌ This command can only be used inside a ticket channel.", ephemeral=True)
+
+    cursor.execute("SELECT staff_role_id FROM server_config WHERE guild_id = ?", (ctx.guild.id,))
+    row = cursor.fetchone()
+    staff_role = ctx.guild.get_role(row[0]) if row and row[0] else None
+
+    if staff_role and staff_role not in ctx.author.roles and not is_owner_or_admin(ctx.guild, ctx.author.id):
+        return await ctx.send("❌ Only staff members can escalate tickets.", ephemeral=True)
+
+    # Restrict channel to Administrators, Bot Owners, and Guild Owner
+    overwrites = {
+        ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        ctx.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+    }
+
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(read_messages=False)
+
+    for role in ctx.guild.roles:
+        if role.permissions.administrator:
+            overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, attach_files=True)
+
+    new_name = f"escalated-{ctx.channel.name.replace('ticket-', '')}"
+    await ctx.channel.edit(name=new_name, overwrites=overwrites)
+
+    embed = discord.Embed(
+        title="🚨 Ticket Escalated",
+        description="This ticket has been escalated. Only Administrators can now view and respond in this channel.",
+        color=discord.Color.red()
+    )
+    await ctx.send(embed=embed)
+
+@bot.hybrid_command(name="close", description="Close support ticket channel")
 async def close(ctx: commands.Context):
-    if not ctx.channel.name.startswith("ticket-"):
+    if not ctx.channel.name.startswith("ticket-") and not ctx.channel.name.startswith("escalated-"):
         return await ctx.send("❌ This command can only be used inside ticket channels.", ephemeral=True)
     await ctx.send("🔒 Closing this ticket in 5 seconds...")
     await asyncio.sleep(5)
     await ctx.channel.delete(reason="Ticket Closed")
 
-# --- ECONOMY COMMANDS ---
-@bot.hybrid_command(name="balance", aliases=["bal"], description="Check your cash and bank balance")
+# --- BOT OWNER ECONOMY COMMANDS ---
+@bot.hybrid_command(name="addmoney", description="Add money to a user's wallet (Bot Owner Only)")
+async def addmoney(ctx: commands.Context, user: discord.Member, amount: int):
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only Bot Owners can execute this command.", ephemeral=True)
+    if amount <= 0: return await ctx.send("❌ Amount must be greater than 0.")
+
+    get_economy_data(user.id)
+    cursor.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, user.id))
+    conn.commit()
+    await ctx.send(f"✅ Added **${amount:,}** to {user.mention}'s wallet.")
+
+@bot.hybrid_command(name="removemoney", description="Remove money from a user's wallet (Bot Owner Only)")
+async def removemoney(ctx: commands.Context, user: discord.Member, amount: int):
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only Bot Owners can execute this command.", ephemeral=True)
+    if amount <= 0: return await ctx.send("❌ Amount must be greater than 0.")
+
+    get_economy_data(user.id)
+    cursor.execute("UPDATE economy SET wallet = MAX(0, wallet - ?) WHERE user_id = ?", (amount, user.id))
+    conn.commit()
+    await ctx.send(f"✅ Removed **${amount:,}** from {user.mention}'s wallet.")
+
+@bot.hybrid_command(name="setbal", description="Set exact wallet balance for a user (Bot Owner Only)")
+async def setbal(ctx: commands.Context, user: discord.Member, amount: int):
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only Bot Owners can execute this command.", ephemeral=True)
+    if amount < 0: return await ctx.send("❌ Amount cannot be negative.")
+
+    get_economy_data(user.id)
+    cursor.execute("UPDATE economy SET wallet = ? WHERE user_id = ?", (amount, user.id))
+    conn.commit()
+    await ctx.send(f"✅ Set {user.mention}'s wallet balance to **${amount:,}**.")
+
+@bot.hybrid_command(name="reseteconomy", description="Reset economy for a player or globally (Bot Owner Only)")
+async def reseteconomy(ctx: commands.Context, target: str):
+    if not is_bot_owner(ctx.author.id):
+        return await ctx.send("❌ Only Bot Owners can execute this command.", ephemeral=True)
+
+    if target.lower() == "global":
+        cursor.execute("DELETE FROM economy")
+        conn.commit()
+        await ctx.send("💥 **Global economy reset complete!** All balances have been cleared.")
+    else:
+        try:
+            member = await commands.MemberConverter().convert(ctx, target)
+            cursor.execute("DELETE FROM economy WHERE user_id = ?", (member.id,))
+            conn.commit()
+            await ctx.send(f"✅ Economy data reset for {member.mention}.")
+        except Exception:
+            await ctx.send("❌ Invalid option. Specify a valid member or type `global`.")
+
+# --- STANDARD ECONOMY COMMANDS ---
+@bot.hybrid_command(name="balance", aliases=["bal"], description="Check your wallet and bank balance")
 async def balance(ctx: commands.Context, user: discord.Member = None):
     target = user or ctx.author
     wallet, bank, _, _, _ = get_economy_data(target.id)
@@ -337,7 +507,7 @@ async def work(ctx: commands.Context):
     conn.commit()
     await ctx.send(f"💼 You worked and earned **${earnings:,}**!")
 
-@bot.hybrid_command(name="beg", description="Beg for some spare change (5 min cooldown)")
+@bot.hybrid_command(name="beg", description="Beg for change (5 min cooldown)")
 async def beg(ctx: commands.Context):
     wallet, bank, work_ts, last_beg, rob = get_economy_data(ctx.author.id)
     now = int(datetime.datetime.now().timestamp())
@@ -359,14 +529,12 @@ async def beg(ctx: commands.Context):
 @bot.hybrid_command(name="deposit", aliases=["dep"], description="Deposit money into bank")
 async def deposit(ctx: commands.Context, amount: str):
     wallet, bank, _, _, _ = get_economy_data(ctx.author.id)
-    if amount.lower() == "all":
-        amt = wallet
+    if amount.lower() == "all": amt = wallet
     else:
         try: amt = int(amount)
         except ValueError: return await ctx.send("❌ Enter a valid number or 'all'.", ephemeral=True)
 
-    if amt <= 0 or wallet < amt:
-        return await ctx.send("❌ Invalid amount or insufficient cash.", ephemeral=True)
+    if amt <= 0 or wallet < amt: return await ctx.send("❌ Invalid amount or insufficient cash.", ephemeral=True)
 
     cursor.execute("UPDATE economy SET wallet = wallet - ?, bank = bank + ? WHERE user_id = ?", (amt, amt, ctx.author.id))
     conn.commit()
@@ -375,14 +543,12 @@ async def deposit(ctx: commands.Context, amount: str):
 @bot.hybrid_command(name="withdraw", aliases=["with"], description="Withdraw money from bank")
 async def withdraw(ctx: commands.Context, amount: str):
     wallet, bank, _, _, _ = get_economy_data(ctx.author.id)
-    if amount.lower() == "all":
-        amt = bank
+    if amount.lower() == "all": amt = bank
     else:
         try: amt = int(amount)
         except ValueError: return await ctx.send("❌ Enter a valid number or 'all'.", ephemeral=True)
 
-    if amt <= 0 or bank < amt:
-        return await ctx.send("❌ Invalid amount or insufficient bank funds.", ephemeral=True)
+    if amt <= 0 or bank < amt: return await ctx.send("❌ Invalid amount or insufficient bank funds.", ephemeral=True)
 
     cursor.execute("UPDATE economy SET bank = bank - ?, wallet = wallet + ? WHERE user_id = ?", (amt, amt, ctx.author.id))
     conn.commit()
@@ -390,14 +556,12 @@ async def withdraw(ctx: commands.Context, amount: str):
 
 @bot.hybrid_command(name="pay", aliases=["transfer"], description="Pay cash to another member")
 async def pay(ctx: commands.Context, member: discord.Member, amount: int):
-    if member.bot or member.id == ctx.author.id:
-        return await ctx.send("❌ Invalid user.", ephemeral=True)
+    if member.bot or member.id == ctx.author.id: return await ctx.send("❌ Invalid user.", ephemeral=True)
     
     sender_wallet, _, _, _, _ = get_economy_data(ctx.author.id)
-    if amount <= 0 or sender_wallet < amount:
-        return await ctx.send("❌ Insufficient funds in wallet.", ephemeral=True)
+    if amount <= 0 or sender_wallet < amount: return await ctx.send("❌ Insufficient funds in wallet.", ephemeral=True)
 
-    get_economy_data(member.id) # Ensure target exists
+    get_economy_data(member.id)
     cursor.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (amount, ctx.author.id))
     cursor.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (amount, member.id))
     conn.commit()
@@ -405,8 +569,7 @@ async def pay(ctx: commands.Context, member: discord.Member, amount: int):
 
 @bot.hybrid_command(name="rob", description="Attempt to rob cash from a user (1 hr cooldown)")
 async def rob(ctx: commands.Context, member: discord.Member):
-    if member.bot or member.id == ctx.author.id:
-        return await ctx.send("❌ Invalid target.", ephemeral=True)
+    if member.bot or member.id == ctx.author.id: return await ctx.send("❌ Invalid target.", ephemeral=True)
 
     robber_wallet, _, _, _, last_rob = get_economy_data(ctx.author.id)
     victim_wallet, _, _, _, _ = get_economy_data(member.id)
@@ -416,12 +579,11 @@ async def rob(ctx: commands.Context, member: discord.Member):
         remaining = 3600 - (now - last_rob)
         return await ctx.send(f"⏳ Wait `{remaining // 60}m` before robbing again.", ephemeral=True)
 
-    if victim_wallet < 100:
-        return await ctx.send(f"❌ `{member.display_name}` is too poor to rob!", ephemeral=True)
+    if victim_wallet < 100: return await ctx.send(f"❌ `{member.display_name}` is too poor to rob!", ephemeral=True)
 
     cursor.execute("UPDATE economy SET last_rob = ? WHERE user_id = ?", (now, ctx.author.id))
 
-    if random.randint(1, 100) <= 45: # 45% Success chance
+    if random.randint(1, 100) <= 45:
         stolen = random.randint(50, min(victim_wallet, 1000))
         cursor.execute("UPDATE economy SET wallet = wallet + ? WHERE user_id = ?", (stolen, ctx.author.id))
         cursor.execute("UPDATE economy SET wallet = wallet - ? WHERE user_id = ?", (stolen, member.id))
@@ -433,7 +595,7 @@ async def rob(ctx: commands.Context, member: discord.Member):
         conn.commit()
         await ctx.send(f"🚨 You got caught and paid a fine of **${fine:,}**!")
 
-# --- GENERAL & MODERATION COMMANDS ---
+# --- GENERAL & SECURITY COMMANDS ---
 @bot.hybrid_command(name="afk", description="Set your AFK status")
 async def afk(ctx: commands.Context, *, reason: str = "AFK"):
     ts = int(datetime.datetime.now().timestamp())
@@ -520,7 +682,7 @@ async def whitelist(ctx: commands.Context, action: str, user: discord.User = Non
 @bot.hybrid_command(name="admin", description="Manage bot admins (Owner Only)")
 @app_commands.choices(action=[app_commands.Choice(name="add", value="add"), app_commands.Choice(name="remove", value="remove"), app_commands.Choice(name="list", value="list")])
 async def admin(ctx: commands.Context, action: str, user: discord.User = None):
-    if ctx.author.id not in BOT_OWNERS and ctx.author.id != ctx.guild.owner_id: return await ctx.send("❌ Owners only.", ephemeral=True)
+    if not is_bot_owner(ctx.author.id) and ctx.author.id != ctx.guild.owner_id: return await ctx.send("❌ Owners only.", ephemeral=True)
     if action == "list":
         cursor.execute("SELECT user_id FROM users WHERE guild_id=? AND role_type='admin'", (ctx.guild.id,))
         admins = [f"<@{r[0]}>" for r in cursor.fetchall()]
@@ -553,3 +715,4 @@ async def logs(ctx: commands.Context, channel: discord.TextChannel):
 
 # --- START BOT ---
 bot.run(os.getenv('DISCORD_TOKEN'))
+
