@@ -66,7 +66,7 @@ conn.commit()
 
 # --- BOT SETUP ---
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix=">", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="-", intents=intents, help_command=None)
 
 # --- HELPER FUNCTIONS ---
 def is_owner_or_admin(guild: discord.Guild, user_id: int) -> bool:
