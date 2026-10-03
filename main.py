@@ -6,13 +6,7 @@ from collections import defaultdict, deque
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 
-# =========================================================
-# CONFIG
-# =========================================================
-
-load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
