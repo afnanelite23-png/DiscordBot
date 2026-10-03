@@ -2,6 +2,7 @@ import os
 import re
 import time
 import sqlite3
+from datetime import timedelta
 from collections import defaultdict, deque
 
 import discord
@@ -419,8 +420,7 @@ async def on_message(message):
                 punishing.add(message.author.id)
 
                 try:
-                    timeout = discord.utils.utcnow() + discord.timedelta(
-                        seconds=30
+                timeout = discord.utils.utcnow() + timedelta(seconds=30)
                     )
 
                     await message.author.edit(
@@ -980,5 +980,5 @@ async def on_command_error(ctx, error):
 # START BOT
 # =========================================================
 
-bot.run(DISCORD_TOKEN)
+bot.run(TOKEN)
 
