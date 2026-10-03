@@ -8,16 +8,24 @@ from collections import defaultdict, deque
 import discord
 from discord.ext import commands
 
+# =========================================================
+# CONFIG
+# =========================================================
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is missing from your environment variables.")
+    raise RuntimeError(
+        "DISCORD_TOKEN is missing from Render Environment Variables."
+    )
 
 PREFIX = ">"
 DATABASE = "security.db"
 
-# Default security settings
+# =========================================================
+# SECURITY SETTINGS
+# =========================================================
+
 DEFAULT_SETTINGS = {
     "antispam": 1,
     "antilink": 1,
@@ -27,15 +35,15 @@ DEFAULT_SETTINGS = {
     "log_channel": 0,
 }
 
-# How many messages within this period = spam
+# Anti-spam
 SPAM_MESSAGE_LIMIT = 6
 SPAM_TIME_WINDOW = 5
 
-# How many joins within this period = raid
+# Anti-raid
 RAID_JOIN_LIMIT = 8
 RAID_TIME_WINDOW = 10
 
-# How many dangerous actions before triggering anti-nuke
+# Anti-nuke
 NUKE_ACTION_LIMIT = 4
 NUKE_TIME_WINDOW = 10
 
@@ -43,7 +51,11 @@ NUKE_TIME_WINDOW = 10
 # DATABASE
 # =========================================================
 
-db = sqlite3.connect(DATABASE, check_same_thread=False)
+db = sqlite3.connect(
+    DATABASE,
+    check_same_thread=False
+)
+
 cursor = db.cursor()
 
 cursor.execute("""
@@ -70,7 +82,15 @@ def ensure_guild(guild_id):
     if cursor.fetchone() is None:
         cursor.execute("""
             INSERT INTO guild_settings
-            (guild_id, antispam, antilink, antiraid, antibot, antinuke, log_channel)
+            (
+                guild_id,
+                antispam,
+                antilink,
+                antiraid,
+                antibot,
+                antinuke,
+                log_channel
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             guild_id,
@@ -81,6 +101,7 @@ def ensure_guild(guild_id):
             DEFAULT_SETTINGS["antinuke"],
             DEFAULT_SETTINGS["log_channel"],
         ))
+
         db.commit()
 
 
@@ -88,7 +109,13 @@ def get_settings(guild_id):
     ensure_guild(guild_id)
 
     cursor.execute("""
-        SELECT antispam, antilink, antiraid, antibot, antinuke, log_channel
+        SELECT
+            antispam,
+            antilink,
+            antiraid,
+            antibot,
+            antinuke,
+            log_channel
         FROM guild_settings
         WHERE guild_id = ?
     """, (guild_id,))
@@ -120,11 +147,16 @@ def update_setting(guild_id, setting, value):
         return False
 
     cursor.execute(
-        f"UPDATE guild_settings SET {setting} = ? WHERE guild_id = ?",
+        f"""
+        UPDATE guild_settings
+        SET {setting} = ?
+        WHERE guild_id = ?
+        """,
         (int(value), guild_id)
     )
 
     db.commit()
+
     return True
 
 
@@ -132,7 +164,11 @@ def set_log_channel(guild_id, channel_id):
     ensure_guild(guild_id)
 
     cursor.execute(
-        "UPDATE guild_settings SET log_channel = ? WHERE guild_id = ?",
+        """
+        UPDATE guild_settings
+        SET log_channel = ?
+        WHERE guild_id = ?
+        """,
         (channel_id, guild_id)
     )
 
@@ -140,7 +176,7 @@ def set_log_channel(guild_id, channel_id):
 
 
 # =========================================================
-# BOT SETUP
+# DISCORD BOT
 # =========================================================
 
 intents = discord.Intents.default()
@@ -162,12 +198,13 @@ bot = commands.Bot(
 # =========================================================
 
 user_messages = defaultdict(deque)
+
 guild_joins = defaultdict(deque)
 
-# guild_id -> user_id -> deque(actions)
-nuke_actions = defaultdict(lambda: defaultdict(deque))
+nuke_actions = defaultdict(
+    lambda: defaultdict(deque)
+)
 
-# Users currently being punished
 punishing = set()
 
 
@@ -175,7 +212,11 @@ punishing = set()
 # EMBEDS
 # =========================================================
 
-def security_embed(title, description, color=discord.Color.blurple()):
+def security_embed(
+    title,
+    description,
+    color=discord.Color.blurple()
+):
     embed = discord.Embed(
         title=title,
         description=description,
@@ -183,7 +224,9 @@ def security_embed(title, description, color=discord.Color.blurple()):
         timestamp=discord.utils.utcnow()
     )
 
-    embed.set_footer(text="Security System")
+    embed.set_footer(
+        text="Security System"
+    )
 
     return embed
 
@@ -203,12 +246,16 @@ async def send_log(guild, embed):
 
     try:
         await channel.send(embed=embed)
-    except (discord.Forbidden, discord.HTTPException):
+
+    except (
+        discord.Forbidden,
+        discord.HTTPException
+    ):
         pass
 
 
 # =========================================================
-# PERMISSION CHECK
+# STAFF CHECK
 # =========================================================
 
 def is_staff(member):
@@ -224,6 +271,7 @@ def is_staff(member):
 
 @bot.event
 async def on_ready():
+
     print("=" * 50)
     print(f"Logged in as: {bot.user}")
     print(f"Bot ID: {bot.user.id}")
@@ -231,11 +279,18 @@ async def on_ready():
     print("=" * 50)
 
     try:
+
         await bot.change_presence(
-            activity=discord.Game(name=f"{PREFIX}security")
+            activity=discord.Game(
+                name=f"{PREFIX}security"
+            )
         )
-    except Exception:
-        pass
+
+    except Exception as error:
+
+        print(
+            f"Presence error: {error}"
+        )
 
 
 # =========================================================
@@ -244,63 +299,88 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild):
+
     ensure_guild(guild.id)
+
+    print(
+        f"Joined server: {guild.name} ({guild.id})"
+    )
 
 
 # =========================================================
-# ANTI-BOT
+# MEMBER JOIN
 # =========================================================
 
 @bot.event
 async def on_member_join(member):
-    guild = member.guild
-    settings = get_settings(guild.id)
 
-    # -------------------------
-    # Anti bot
-    # -------------------------
+    guild = member.guild
+
+    settings = get_settings(
+        guild.id
+    )
+
+    # =====================================================
+    # ANTI BOT
+    # =====================================================
 
     if settings["antibot"] and member.bot:
 
-        # Don't interfere with the security bot itself
+        # Don't remove this security bot
         if member.id != bot.user.id:
 
             try:
+
                 await member.kick(
                     reason="Security: unauthorized bot detected"
                 )
 
                 embed = security_embed(
                     "🤖 Unauthorized Bot Blocked",
-                    f"{member.mention} was removed because the server's "
-                    f"anti-bot protection is enabled.",
+                    (
+                        f"{member.mention} was removed because "
+                        f"anti-bot protection is enabled."
+                    ),
                     discord.Color.red()
                 )
 
                 embed.add_field(
                     name="Bot",
-                    value=f"{member} (`{member.id}`)",
+                    value=(
+                        f"{member} (`{member.id}`)"
+                    ),
                     inline=False
                 )
 
-                await send_log(guild, embed)
+                await send_log(
+                    guild,
+                    embed
+                )
 
             except discord.Forbidden:
+
                 await send_log(
                     guild,
                     security_embed(
                         "⚠️ Anti-Bot Failed",
-                        f"I couldn't remove {member.mention}. "
-                        f"Check my role position and permissions.",
+                        (
+                            f"I couldn't remove "
+                            f"{member.mention}.\n\n"
+                            f"Make sure my role is above "
+                            f"the bot's role."
+                        ),
                         discord.Color.orange()
                     )
                 )
 
+            except discord.HTTPException:
+                pass
+
             return
 
-    # -------------------------
-    # Anti raid
-    # -------------------------
+    # =====================================================
+    # ANTI RAID
+    # =====================================================
 
     if settings["antiraid"]:
 
@@ -310,19 +390,39 @@ async def on_member_join(member):
 
         joins.append(now)
 
-        while joins and now - joins[0] > RAID_TIME_WINDOW:
+        while (
+            joins
+            and now - joins[0] > RAID_TIME_WINDOW
+        ):
             joins.popleft()
 
         if len(joins) >= RAID_JOIN_LIMIT:
 
             embed = security_embed(
                 "🚨 RAID DETECTED",
-                f"**{len(joins)} members** joined within "
-                f"{RAID_TIME_WINDOW} seconds.",
+                (
+                    f"**{len(joins)} members** joined "
+                    f"within **{RAID_TIME_WINDOW} seconds**."
+                ),
                 discord.Color.dark_red()
             )
 
-            await send_log(guild, embed)
+            embed.add_field(
+                name="Server",
+                value=guild.name,
+                inline=True
+            )
+
+            embed.add_field(
+                name="Join Count",
+                value=str(len(joins)),
+                inline=True
+            )
+
+            await send_log(
+                guild,
+                embed
+            )
 
 
 # =========================================================
@@ -338,89 +438,150 @@ INVITE_REGEX = re.compile(
 @bot.event
 async def on_message(message):
 
+    # Ignore bots
     if message.author.bot:
         return
 
+    # DM
     if not message.guild:
-        await bot.process_commands(message)
+
+        await bot.process_commands(
+            message
+        )
+
         return
 
     guild = message.guild
-    settings = get_settings(guild.id)
 
-    # Staff bypass
-    if isinstance(message.author, discord.Member):
-        staff = is_staff(message.author)
+    settings = get_settings(
+        guild.id
+    )
+
+    # =====================================================
+    # STAFF BYPASS
+    # =====================================================
+
+    if isinstance(
+        message.author,
+        discord.Member
+    ):
+
+        staff = is_staff(
+            message.author
+        )
+
     else:
+
         staff = False
 
     # =====================================================
-    # ANTI-LINK / INVITE
+    # ANTI INVITE
     # =====================================================
 
-    if settings["antilink"] and not staff:
+    if (
+        settings["antilink"]
+        and not staff
+    ):
 
-        if INVITE_REGEX.search(message.content):
+        if INVITE_REGEX.search(
+            message.content
+        ):
 
             try:
+
                 await message.delete()
 
                 warning = await message.channel.send(
                     embed=security_embed(
                         "🔗 Invite Removed",
-                        f"{message.author.mention}, Discord invites "
-                        f"aren't allowed here.",
+                        (
+                            f"{message.author.mention}, "
+                            f"Discord invites aren't allowed here."
+                        ),
                         discord.Color.orange()
                     )
                 )
 
-                await warning.delete(delay=5)
+                await warning.delete(
+                    delay=5
+                )
 
                 await send_log(
                     guild,
                     security_embed(
                         "🔗 Invite Blocked",
-                        f"Removed a Discord invite sent by "
-                        f"{message.author.mention}.",
+                        (
+                            f"Removed a Discord invite "
+                            f"sent by {message.author.mention}."
+                        ),
                         discord.Color.orange()
                     )
                 )
 
-            except (discord.Forbidden, discord.HTTPException):
+            except (
+                discord.Forbidden,
+                discord.HTTPException
+            ):
+
                 pass
 
             return
 
     # =====================================================
-    # ANTI-SPAM
+    # ANTI SPAM
     # =====================================================
 
-    if settings["antispam"] and not staff:
+    if (
+        settings["antispam"]
+        and not staff
+    ):
 
         now = time.monotonic()
 
         messages = user_messages[
-            (guild.id, message.author.id)
+            (
+                guild.id,
+                message.author.id
+            )
         ]
 
         messages.append(now)
 
-        while messages and now - messages[0] > SPAM_TIME_WINDOW:
+        while (
+            messages
+            and now - messages[0] > SPAM_TIME_WINDOW
+        ):
+
             messages.popleft()
 
         if len(messages) >= SPAM_MESSAGE_LIMIT:
 
             try:
+
                 await message.delete()
-            except (discord.Forbidden, discord.HTTPException):
+
+            except (
+                discord.Forbidden,
+                discord.HTTPException
+            ):
+
                 pass
 
-            if message.author.id not in punishing:
+            if (
+                message.author.id
+                not in punishing
+            ):
 
-                punishing.add(message.author.id)
+                punishing.add(
+                    message.author.id
+                )
 
                 try:
-                timeout = discord.utils.utcnow() + timedelta(seconds=30)
+
+                    # FIXED TIMEOUT
+                    timeout = (
+                        discord.utils.utcnow()
+                        + timedelta(seconds=30)
                     )
 
                     await message.author.edit(
@@ -432,25 +593,37 @@ async def on_message(message):
                         guild,
                         security_embed(
                             "🚨 Spam Detected",
-                            f"{message.author.mention} was timed out "
-                            f"for repeatedly sending messages.",
+                            (
+                                f"{message.author.mention} "
+                                f"was timed out for **30 seconds** "
+                                f"because of spam."
+                            ),
                             discord.Color.red()
                         )
                     )
 
-                except (discord.Forbidden, discord.HTTPException):
+                except (
+                    discord.Forbidden,
+                    discord.HTTPException
+                ):
+
                     pass
 
                 finally:
-                    punishing.discard(message.author.id)
+
+                    punishing.discard(
+                        message.author.id
+                    )
 
             return
 
-    await bot.process_commands(message)
+    await bot.process_commands(
+        message
+    )
 
 
 # =========================================================
-# ANTI-NUKE
+# ANTI NUKE
 # =========================================================
 
 DANGEROUS_ACTIONS = {
@@ -461,9 +634,15 @@ DANGEROUS_ACTIONS = {
 }
 
 
-async def anti_nuke_check(guild, user_id, action):
+async def anti_nuke_check(
+    guild,
+    user_id,
+    action
+):
 
-    settings = get_settings(guild.id)
+    settings = get_settings(
+        guild.id
+    )
 
     if not settings["antinuke"]:
         return False
@@ -471,28 +650,40 @@ async def anti_nuke_check(guild, user_id, action):
     if action not in DANGEROUS_ACTIONS:
         return False
 
+    # Never punish server owner
     if user_id == guild.owner_id:
         return False
 
     now = time.monotonic()
 
-    actions = nuke_actions[guild.id][user_id]
+    actions = nuke_actions[
+        guild.id
+    ][user_id]
 
     actions.append(now)
 
-    while actions and now - actions[0] > NUKE_TIME_WINDOW:
+    while (
+        actions
+        and now - actions[0] > NUKE_TIME_WINDOW
+    ):
+
         actions.popleft()
 
     if len(actions) < NUKE_ACTION_LIMIT:
         return False
 
-    member = guild.get_member(user_id)
+    member = guild.get_member(
+        user_id
+    )
 
     if member is None:
         return False
 
     try:
-        # Remove administrator permission
+
+        # Remove Administrator permission
+        # from administrator roles owned
+        # by the suspicious user.
         for role in member.roles:
 
             if role.is_default():
@@ -501,22 +692,42 @@ async def anti_nuke_check(guild, user_id, action):
             if role.permissions.administrator:
 
                 try:
-                    await role.edit(
-                        permissions=discord.Permissions(
+
+                    new_permissions = (
+                        discord.Permissions(
                             role.permissions.value
-                            & ~discord.Permissions(administrator=True).value
-                        ),
-                        reason="Security: possible anti-nuke violation"
+                            & ~discord.Permissions(
+                                administrator=True
+                            ).value
+                        )
                     )
-                except Exception:
+
+                    await role.edit(
+                        permissions=new_permissions,
+                        reason=(
+                            "Security: possible "
+                            "anti-nuke violation"
+                        )
+                    )
+
+                except (
+                    discord.Forbidden,
+                    discord.HTTPException
+                ):
+
                     pass
 
         await send_log(
             guild,
             security_embed(
                 "☢️ ANTI-NUKE TRIGGERED",
-                f"Suspicious activity was detected from "
-                f"{member.mention}.",
+                (
+                    f"Suspicious activity detected "
+                    f"from {member.mention}.\n\n"
+                    f"**Action:** `{action}`\n"
+                    f"**Actions detected:** "
+                    f"`{len(actions)}`"
+                ),
                 discord.Color.dark_red()
             )
         )
@@ -524,11 +735,12 @@ async def anti_nuke_check(guild, user_id, action):
         return True
 
     except Exception:
+
         return False
 
 
 # =========================================================
-# CHANNEL DELETE PROTECTION
+# CHANNEL DELETE
 # =========================================================
 
 @bot.event
@@ -537,12 +749,16 @@ async def on_guild_channel_delete(channel):
     guild = channel.guild
 
     try:
+
         async for entry in guild.audit_logs(
             limit=5,
             action=discord.AuditLogAction.channel_delete
         ):
 
-            if entry.target.id == channel.id:
+            if (
+                entry.target
+                and entry.target.id == channel.id
+            ):
 
                 user = entry.user
 
@@ -556,22 +772,28 @@ async def on_guild_channel_delete(channel):
                     guild,
                     security_embed(
                         "🗑️ Channel Deleted",
-                        f"**Channel:** `{channel.name}`\n"
-                        f"**Deleted by:** {user.mention}\n"
-                        f"**Anti-Nuke:** "
-                        f"{'TRIGGERED' if triggered else 'Monitored'}",
+                        (
+                            f"**Channel:** `{channel.name}`\n"
+                            f"**Deleted by:** {user.mention}\n"
+                            f"**Anti-Nuke:** "
+                            f"{'TRIGGERED' if triggered else 'Monitored'}"
+                        ),
                         discord.Color.red()
                     )
                 )
 
                 break
 
-    except (discord.Forbidden, discord.HTTPException):
+    except (
+        discord.Forbidden,
+        discord.HTTPException
+    ):
+
         pass
 
 
 # =========================================================
-# ROLE DELETE PROTECTION
+# ROLE DELETE
 # =========================================================
 
 @bot.event
@@ -580,12 +802,16 @@ async def on_guild_role_delete(role):
     guild = role.guild
 
     try:
+
         async for entry in guild.audit_logs(
             limit=5,
             action=discord.AuditLogAction.role_delete
         ):
 
-            if entry.target.id == role.id:
+            if (
+                entry.target
+                and entry.target.id == role.id
+            ):
 
                 user = entry.user
 
@@ -599,30 +825,40 @@ async def on_guild_role_delete(role):
                     guild,
                     security_embed(
                         "🗑️ Role Deleted",
-                        f"**Role:** `{role.name}`\n"
-                        f"**Deleted by:** {user.mention}\n"
-                        f"**Anti-Nuke:** "
-                        f"{'TRIGGERED' if triggered else 'Monitored'}",
+                        (
+                            f"**Role:** `{role.name}`\n"
+                            f"**Deleted by:** {user.mention}\n"
+                            f"**Anti-Nuke:** "
+                            f"{'TRIGGERED' if triggered else 'Monitored'}"
+                        ),
                         discord.Color.red()
                     )
                 )
 
                 break
 
-    except (discord.Forbidden, discord.HTTPException):
+    except (
+        discord.Forbidden,
+        discord.HTTPException
+    ):
+
         pass
 
 
 # =========================================================
-# SECURITY COMMAND
+# SECURITY DASHBOARD
 # =========================================================
 
 @bot.command()
 @commands.guild_only()
-@commands.has_permissions(administrator=True)
+@commands.has_permissions(
+    administrator=True
+)
 async def security(ctx):
 
-    settings = get_settings(ctx.guild.id)
+    settings = get_settings(
+        ctx.guild.id
+    )
 
     embed = security_embed(
         "🛡️ Security Dashboard",
@@ -632,53 +868,87 @@ async def security(ctx):
 
     embed.add_field(
         name="🛡️ Anti-Spam",
-        value="🟢 Enabled" if settings["antispam"] else "🔴 Disabled",
+        value=(
+            "🟢 Enabled"
+            if settings["antispam"]
+            else "🔴 Disabled"
+        ),
         inline=True
     )
 
     embed.add_field(
         name="🔗 Anti-Invite",
-        value="🟢 Enabled" if settings["antilink"] else "🔴 Disabled",
+        value=(
+            "🟢 Enabled"
+            if settings["antilink"]
+            else "🔴 Disabled"
+        ),
         inline=True
     )
 
     embed.add_field(
         name="🚨 Anti-Raid",
-        value="🟢 Enabled" if settings["antiraid"] else "🔴 Disabled",
+        value=(
+            "🟢 Enabled"
+            if settings["antiraid"]
+            else "🔴 Disabled"
+        ),
         inline=True
     )
 
     embed.add_field(
         name="🤖 Anti-Bot",
-        value="🟢 Enabled" if settings["antibot"] else "🔴 Disabled",
+        value=(
+            "🟢 Enabled"
+            if settings["antibot"]
+            else "🔴 Disabled"
+        ),
         inline=True
     )
 
     embed.add_field(
         name="☢️ Anti-Nuke",
-        value="🟢 Enabled" if settings["antinuke"] else "🔴 Disabled",
+        value=(
+            "🟢 Enabled"
+            if settings["antinuke"]
+            else "🔴 Disabled"
+        ),
         inline=True
     )
 
-    log_channel = ctx.guild.get_channel(settings["log_channel"])
+    log_channel = ctx.guild.get_channel(
+        settings["log_channel"]
+    )
 
     embed.add_field(
         name="📋 Log Channel",
-        value=log_channel.mention if log_channel else "Not configured",
+        value=(
+            log_channel.mention
+            if log_channel
+            else "Not configured"
+        ),
         inline=True
     )
 
-    await ctx.send(embed=embed)
+    await ctx.send(
+        embed=embed
+    )
 
 
 # =========================================================
-# TOGGLE COMMAND
+# SECURITY TOGGLE
 # =========================================================
 
 @bot.command()
 @commands.guild_only()
-@commands.has_permissions(administrator=True)
-async def security_toggle(ctx, option: str, state: str):
+@commands.has_permissions(
+    administrator=True
+)
+async def security_toggle(
+    ctx,
+    option: str,
+    state: str
+):
 
     options = {
         "antispam": "antispam",
@@ -692,17 +962,24 @@ async def security_toggle(ctx, option: str, state: str):
     state = state.lower()
 
     if option not in options:
+
         await ctx.send(
             embed=security_embed(
                 "❌ Invalid Option",
-                "Use: `antispam`, `antilink`, `antiraid`, "
-                "`antibot`, or `antinuke`.",
+                (
+                    "Use: `antispam`, `antilink`, "
+                    "`antiraid`, `antibot`, or `antinuke`."
+                ),
                 discord.Color.red()
             )
         )
+
         return
 
-    if state not in ("on", "off"):
+    if state not in (
+        "on",
+        "off"
+    ):
 
         await ctx.send(
             embed=security_embed(
@@ -711,6 +988,7 @@ async def security_toggle(ctx, option: str, state: str):
                 discord.Color.red()
             )
         )
+
         return
 
     enabled = state == "on"
@@ -724,21 +1002,28 @@ async def security_toggle(ctx, option: str, state: str):
     await ctx.send(
         embed=security_embed(
             "⚙️ Security Updated",
-            f"**{option}** has been "
-            f"{'enabled 🟢' if enabled else 'disabled 🔴'}.",
+            (
+                f"**{option}** has been "
+                f"{'enabled 🟢' if enabled else 'disabled 🔴'}."
+            ),
             discord.Color.green()
         )
     )
 
 
 # =========================================================
-# LOG CHANNEL
+# SECURITY LOG CHANNEL
 # =========================================================
 
 @bot.command()
 @commands.guild_only()
-@commands.has_permissions(administrator=True)
-async def security_logs(ctx, channel: discord.TextChannel):
+@commands.has_permissions(
+    administrator=True
+)
+async def security_logs(
+    ctx,
+    channel: discord.TextChannel
+):
 
     set_log_channel(
         ctx.guild.id,
@@ -748,7 +1033,10 @@ async def security_logs(ctx, channel: discord.TextChannel):
     await ctx.send(
         embed=security_embed(
             "📋 Security Logs Configured",
-            f"Security events will now be logged in {channel.mention}.",
+            (
+                f"Security events will now be logged "
+                f"in {channel.mention}."
+            ),
             discord.Color.green()
         )
     )
@@ -760,7 +1048,9 @@ async def security_logs(ctx, channel: discord.TextChannel):
 
 @bot.command()
 @commands.guild_only()
-@commands.has_permissions(administrator=True)
+@commands.has_permissions(
+    administrator=True
+)
 async def lockdown(ctx):
 
     changed = 0
@@ -783,14 +1073,20 @@ async def lockdown(ctx):
 
             changed += 1
 
-        except (discord.Forbidden, discord.HTTPException):
+        except (
+            discord.Forbidden,
+            discord.HTTPException
+        ):
+
             pass
 
     await ctx.send(
         embed=security_embed(
             "🔒 SERVER LOCKDOWN",
-            f"Lockdown activated.\n\n"
-            f"Locked channels: **{changed}**",
+            (
+                f"Lockdown activated.\n\n"
+                f"Locked channels: **{changed}**"
+            ),
             discord.Color.dark_red()
         )
     )
@@ -802,7 +1098,9 @@ async def lockdown(ctx):
 
 @bot.command()
 @commands.guild_only()
-@commands.has_permissions(administrator=True)
+@commands.has_permissions(
+    administrator=True
+)
 async def unlock(ctx):
 
     changed = 0
@@ -825,14 +1123,20 @@ async def unlock(ctx):
 
             changed += 1
 
-        except (discord.Forbidden, discord.HTTPException):
+        except (
+            discord.Forbidden,
+            discord.HTTPException
+        ):
+
             pass
 
     await ctx.send(
         embed=security_embed(
             "🔓 SERVER UNLOCKED",
-            f"Lockdown removed.\n\n"
-            f"Updated channels: **{changed}**",
+            (
+                f"Lockdown removed.\n\n"
+                f"Updated channels: **{changed}**"
+            ),
             discord.Color.green()
         )
     )
@@ -844,8 +1148,13 @@ async def unlock(ctx):
 
 @bot.command()
 @commands.guild_only()
-@commands.has_permissions(manage_messages=True)
-async def purge(ctx, amount: int):
+@commands.has_permissions(
+    manage_messages=True
+)
+async def purge(
+    ctx,
+    amount: int
+):
 
     if amount < 1 or amount > 100:
 
@@ -859,24 +1168,47 @@ async def purge(ctx, amount: int):
 
         return
 
-    deleted = await ctx.channel.purge(limit=amount + 1)
+    try:
 
-    msg = await ctx.send(
-        embed=security_embed(
-            "🧹 Messages Purged",
-            f"Deleted **{len(deleted) - 1}** messages.",
-            discord.Color.green()
+        deleted = await ctx.channel.purge(
+            limit=amount + 1
         )
-    )
 
-    await msg.delete(delay=5)
+        msg = await ctx.send(
+            embed=security_embed(
+                "🧹 Messages Purged",
+                (
+                    f"Deleted **{len(deleted) - 1}** messages."
+                ),
+                discord.Color.green()
+            )
+        )
+
+        await msg.delete(
+            delay=5
+        )
+
+    except (
+        discord.Forbidden,
+        discord.HTTPException
+    ):
+
+        await ctx.send(
+            embed=security_embed(
+                "❌ Purge Failed",
+                "I don't have permission to delete messages.",
+                discord.Color.red()
+            )
+        )
 
 
 # =========================================================
-# SECURITY HELP
+# HELP
 # =========================================================
 
-@bot.command(name="security_help")
+@bot.command(
+    name="security_help"
+)
 async def security_help(ctx):
 
     embed = security_embed(
@@ -886,13 +1218,13 @@ async def security_help(ctx):
     )
 
     embed.add_field(
-        name="Dashboard",
+        name="📊 Dashboard",
         value=f"`{PREFIX}security`",
         inline=False
     )
 
     embed.add_field(
-        name="Toggle Protection",
+        name="⚙️ Protection",
         value=(
             f"`{PREFIX}security_toggle antispam on`\n"
             f"`{PREFIX}security_toggle antilink on`\n"
@@ -904,13 +1236,15 @@ async def security_help(ctx):
     )
 
     embed.add_field(
-        name="Logging",
-        value=f"`{PREFIX}security_logs #channel`",
+        name="📋 Logging",
+        value=(
+            f"`{PREFIX}security_logs #channel`"
+        ),
         inline=False
     )
 
     embed.add_field(
-        name="Emergency",
+        name="🚨 Emergency",
         value=(
             f"`{PREFIX}lockdown`\n"
             f"`{PREFIX}unlock`"
@@ -919,12 +1253,16 @@ async def security_help(ctx):
     )
 
     embed.add_field(
-        name="Moderation",
-        value=f"`{PREFIX}purge 50`",
+        name="🧹 Moderation",
+        value=(
+            f"`{PREFIX}purge 50`"
+        ),
         inline=False
     )
 
-    await ctx.send(embed=embed)
+    await ctx.send(
+        embed=embed
+    )
 
 
 # =========================================================
@@ -932,12 +1270,21 @@ async def security_help(ctx):
 # =========================================================
 
 @bot.event
-async def on_command_error(ctx, error):
+async def on_command_error(
+    ctx,
+    error
+):
 
-    if isinstance(error, commands.CommandNotFound):
+    if isinstance(
+        error,
+        commands.CommandNotFound
+    ):
         return
 
-    if isinstance(error, commands.MissingPermissions):
+    if isinstance(
+        error,
+        commands.MissingPermissions
+    ):
 
         await ctx.send(
             embed=security_embed(
@@ -949,36 +1296,51 @@ async def on_command_error(ctx, error):
 
         return
 
-    if isinstance(error, commands.MissingRequiredArgument):
+    if isinstance(
+        error,
+        commands.MissingRequiredArgument
+    ):
 
         await ctx.send(
             embed=security_embed(
                 "❌ Missing Argument",
-                f"You're missing: `{error.param.name}`",
+                (
+                    f"You're missing: "
+                    f"`{error.param.name}`"
+                ),
                 discord.Color.orange()
             )
         )
 
         return
 
-    if isinstance(error, commands.BadArgument):
+    if isinstance(
+        error,
+        commands.BadArgument
+    ):
 
         await ctx.send(
             embed=security_embed(
                 "❌ Invalid Argument",
-                "Please check the command arguments and try again.",
+                (
+                    "Please check the command arguments "
+                    "and try again."
+                ),
                 discord.Color.orange()
             )
         )
 
         return
 
-    print(f"Command error: {repr(error)}")
+    print(
+        f"Command error: {repr(error)}"
+    )
 
 
 # =========================================================
 # START BOT
 # =========================================================
 
-bot.run(TOKEN)
+print("Starting Security Bot...")
 
+bot.run(TOKEN)
